@@ -2,6 +2,7 @@
 
 import base64
 import io
+import json
 
 import numpy as np
 import pytest
@@ -14,8 +15,28 @@ from inference import (
     MlxLmBackend,
     OllamaBackend,
     _image_to_base64,
+    _resize_if_needed,
     get_available_backend,
 )
+
+
+def _streaming_body(text, chunk_size=20):
+    """Build a newline-delimited JSON body that mimics Ollama streaming.
+
+    Splits *text* into small token chunks, each as a ``{"response": ...}``
+    JSON line, terminated by a ``{"done": true}`` sentinel.
+    """
+    lines = []
+    for i in range(0, len(text), chunk_size):
+        lines.append(json.dumps({"response": text[i:i + chunk_size], "done": False}))
+    lines.append(json.dumps({
+        "response": "",
+        "done": True,
+        "eval_count": len(text) // chunk_size,
+        "eval_duration": 1_000_000_000,
+        "prompt_eval_count": 50,
+    }))
+    return "\n".join(lines)
 
 # ---------------------------------------------------------------------------
 # Image Encoding (IE-*)
@@ -39,12 +60,12 @@ class TestImageToBase64:
         assert img.size == (100, 100)
 
     def test_encode_pil_image(self):
-        """IE-03: PIL RGB Image encodes correctly."""
+        """IE-03: PIL RGB Image encodes correctly (JPEG)."""
         img = Image.fromarray(np.zeros((50, 50, 3), dtype=np.uint8))
         b64 = _image_to_base64(img)
         assert len(b64) > 0
         decoded = base64.b64decode(b64)
-        assert decoded[:8] == b"\x89PNG\r\n\x1a\n"  # PNG magic bytes
+        assert decoded[:2] == b"\xff\xd8"  # JPEG magic bytes
 
     def test_encode_rgba_image(self):
         """IE-04: RGBA PIL image is handled (converted to RGB)."""
@@ -55,12 +76,32 @@ class TestImageToBase64:
         assert result_img.size == (50, 50)
 
     def test_roundtrip_dimensions(self):
-        """IE-05: Roundtrip encode/decode preserves dimensions."""
+        """IE-05: Roundtrip encode/decode preserves dimensions (small image, no resize)."""
         arr = np.random.randint(0, 255, (200, 150, 3), dtype=np.uint8)
         b64 = _image_to_base64(arr)
         decoded = base64.b64decode(b64)
         img = Image.open(io.BytesIO(decoded))
         assert img.size == (150, 200)  # PIL size is (width, height)
+
+    def test_resize_large_image(self):
+        """IE-06: Large image is downscaled to max_dim."""
+        img = Image.fromarray(np.zeros((2048, 3072, 3), dtype=np.uint8))
+        resized = _resize_if_needed(img, max_dim=512)
+        assert max(resized.size) == 512
+
+    def test_no_resize_small_image(self):
+        """IE-07: Small image is not resized."""
+        img = Image.fromarray(np.zeros((256, 256, 3), dtype=np.uint8))
+        resized = _resize_if_needed(img, max_dim=1024)
+        assert resized.size == (256, 256)
+
+    def test_base64_respects_max_dim(self):
+        """IE-08: _image_to_base64 downscales large images."""
+        arr = np.zeros((2000, 2000, 3), dtype=np.uint8)
+        b64 = _image_to_base64(arr, max_dim=256)
+        decoded = base64.b64decode(b64)
+        img = Image.open(io.BytesIO(decoded))
+        assert max(img.size) == 256
 
 
 # ---------------------------------------------------------------------------
@@ -153,12 +194,14 @@ class TestOllamaBackend:
 
     @responses.activate
     def test_analyze_success(self, mock_ollama_generate_response):
-        """OB-06: Successful analysis returns response text."""
+        """OB-06: Successful streaming analysis returns response text."""
+        full_text = mock_ollama_generate_response["response"]
         responses.add(
             responses.POST,
             "http://localhost:11434/api/generate",
-            json=mock_ollama_generate_response,
+            body=_streaming_body(full_text),
             status=200,
+            content_type="application/x-ndjson",
         )
         backend = OllamaBackend()
         arr = np.zeros((64, 64, 3), dtype=np.uint8)
@@ -169,11 +212,12 @@ class TestOllamaBackend:
     @responses.activate
     def test_analyze_with_metadata(self, mock_ollama_generate_response):
         """OB-07: Metadata is included in the prompt."""
+        full_text = mock_ollama_generate_response["response"]
+
         def request_callback(request):
-            import json
             body = json.loads(request.body)
             assert "Modality: CT" in body["prompt"]
-            return (200, {}, json.dumps(mock_ollama_generate_response))
+            return (200, {}, _streaming_body(full_text))
 
         responses.add_callback(
             responses.POST,
@@ -200,12 +244,17 @@ class TestOllamaBackend:
 
     @responses.activate
     def test_analyze_empty_response(self):
-        """OB-10: Missing 'response' key → fallback message."""
+        """OB-10: Empty stream → fallback message."""
+        body = json.dumps({
+            "done": True, "eval_count": 0,
+            "eval_duration": 0, "prompt_eval_count": 0,
+        })
         responses.add(
             responses.POST,
             "http://localhost:11434/api/generate",
-            json={"done": True},
+            body=body,
             status=200,
+            content_type="application/x-ndjson",
         )
         backend = OllamaBackend()
         arr = np.zeros((64, 64, 3), dtype=np.uint8)
@@ -215,11 +264,12 @@ class TestOllamaBackend:
     @responses.activate
     def test_system_prompt_sent(self, mock_ollama_generate_response):
         """OB-11: System prompt is included in the payload."""
+        full_text = mock_ollama_generate_response["response"]
+
         def request_callback(request):
-            import json
             body = json.loads(request.body)
             assert body["system"] == SYSTEM_PROMPT
-            return (200, {}, json.dumps(mock_ollama_generate_response))
+            return (200, {}, _streaming_body(full_text))
 
         responses.add_callback(
             responses.POST,
@@ -233,13 +283,14 @@ class TestOllamaBackend:
     @responses.activate
     def test_image_sent_as_base64(self, mock_ollama_generate_response):
         """OB-12: Image is sent as base64 in the images field."""
+        full_text = mock_ollama_generate_response["response"]
+
         def request_callback(request):
-            import json
             body = json.loads(request.body)
             assert len(body["images"]) == 1
             # Verify it's valid base64
             base64.b64decode(body["images"][0])
-            return (200, {}, json.dumps(mock_ollama_generate_response))
+            return (200, {}, _streaming_body(full_text))
 
         responses.add_callback(
             responses.POST,
@@ -249,6 +300,42 @@ class TestOllamaBackend:
         backend = OllamaBackend()
         arr = np.zeros((64, 64, 3), dtype=np.uint8)
         backend.analyze(arr)
+
+    @responses.activate
+    def test_on_token_callback(self, mock_ollama_generate_response):
+        """OB-13: on_token callback receives streamed fragments."""
+        full_text = mock_ollama_generate_response["response"]
+        responses.add(
+            responses.POST,
+            "http://localhost:11434/api/generate",
+            body=_streaming_body(full_text),
+            status=200,
+            content_type="application/x-ndjson",
+        )
+        backend = OllamaBackend()
+        arr = np.zeros((64, 64, 3), dtype=np.uint8)
+        tokens = []
+        backend.analyze(arr, on_token=tokens.append)
+        assert len(tokens) > 1
+        assert "".join(tokens) == full_text
+
+    @responses.activate
+    def test_on_log_callback(self, mock_ollama_generate_response):
+        """OB-14: on_log callback receives backend log messages."""
+        full_text = mock_ollama_generate_response["response"]
+        responses.add(
+            responses.POST,
+            "http://localhost:11434/api/generate",
+            body=_streaming_body(full_text),
+            status=200,
+            content_type="application/x-ndjson",
+        )
+        backend = OllamaBackend()
+        arr = np.zeros((64, 64, 3), dtype=np.uint8)
+        logs = []
+        backend.analyze(arr, on_log=logs.append)
+        assert any("[backend]" in msg for msg in logs)
+        assert any("[ollama]" in msg for msg in logs)
 
 
 # ---------------------------------------------------------------------------
