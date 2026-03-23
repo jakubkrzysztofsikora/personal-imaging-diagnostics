@@ -5,19 +5,15 @@ A local, privacy-preserving Streamlit app for analyzing X-rays, CTs, and MRIs
 using a local Vision-Language Model via Ollama or mlx-lm.
 """
 
-import io
-
-import numpy as np
 import streamlit as st
 from PIL import Image
 
-from inference import OllamaBackend, MlxLmBackend, SYSTEM_PROMPT
+from inference import MlxLmBackend, OllamaBackend
 from preprocessing import (
+    dicom_to_pil,
     load_dicom,
-    extract_metadata,
     preprocess_dicom,
     preprocess_standard_image,
-    dicom_to_pil,
 )
 
 DISCLAIMER = (
@@ -29,17 +25,37 @@ DISCLAIMER = (
     "for medical advice, diagnosis, or treatment."
 )
 
+RECOMMENDED_VISION_MODELS = [
+    "llama3.2-vision",
+    "llava",
+    "llava-phi3",
+    "bakllava",
+    "moondream",
+    "minicpm-v",
+    "granite3.2-vision",
+    "qwen2.5vl",
+    "gemma3",
+]
+
 
 def init_session_state():
     defaults = {
         "analysis_result": None,
         "acknowledged": False,
-        "image_data": None,
-        "metadata": None,
+        "pull_status": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
+
+
+def _format_size(size_bytes):
+    """Format byte count to human-readable string."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(size_bytes) < 1024:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} TB"
 
 
 def render_sidebar():
@@ -65,7 +81,7 @@ def render_sidebar():
             if backend.is_available():
                 st.sidebar.success(f"Connected. Model '{ollama_model}' is available.")
             else:
-                models = backend.list_models()
+                models = backend.list_model_names()
                 if models:
                     st.sidebar.warning(
                         f"Model '{ollama_model}' not found. Available: {', '.join(models)}"
@@ -95,6 +111,114 @@ def render_sidebar():
     return backend
 
 
+def render_model_management(backend):
+    """Render the Ollama model management tab."""
+    if not isinstance(backend, OllamaBackend):
+        st.info("Model management is only available with the Ollama backend.")
+        return
+
+    st.subheader("Ollama Model Management")
+
+    # Connection check
+    models = backend.list_models()
+    if not models and not backend.list_model_names():
+        st.error(
+            "Cannot connect to Ollama. Make sure Ollama is running "
+            "(`ollama serve` or the desktop app)."
+        )
+        return
+
+    # --- Installed Models ---
+    st.markdown("#### Installed Models")
+    if models:
+        for model in models:
+            name = model.get("name", "unknown")
+            size = _format_size(model.get("size", 0))
+            details = model.get("details", {})
+            param_size = details.get("parameter_size", "?")
+            quant = details.get("quantization_level", "?")
+            family = details.get("family", "?")
+
+            col1, col2, col3 = st.columns([3, 2, 1])
+            with col1:
+                st.markdown(f"**{name}**")
+                st.caption(f"{family} · {param_size} · {quant} · {size}")
+            with col2:
+                if st.button("ℹ️ Info", key=f"info_{name}"):
+                    info = backend.show_model(name)
+                    if info:
+                        st.json({
+                            "family": info.get("details", {}).get("family"),
+                            "parameter_size": info.get("details", {}).get("parameter_size"),
+                            "quantization": info.get("details", {}).get("quantization_level"),
+                            "template": info.get("template", "")[:200] + "...",
+                        })
+            with col3:
+                if st.button("🗑️ Delete", key=f"del_{name}"):
+                    if backend.delete_model(name):
+                        st.success(f"Deleted {name}")
+                        st.rerun()
+                    else:
+                        st.error(f"Failed to delete {name}")
+        st.markdown("---")
+    else:
+        st.info("No models installed. Pull one below to get started.")
+
+    # --- Running Models ---
+    running = backend.list_running()
+    if running:
+        st.markdown("#### Currently Loaded")
+        for model in running:
+            name = model.get("name", "unknown")
+            vram = _format_size(model.get("size_vram", 0))
+            st.caption(f"🟢 **{name}** — VRAM: {vram}")
+        st.markdown("---")
+
+    # --- Pull New Model ---
+    st.markdown("#### Pull New Model")
+
+    pull_col1, pull_col2 = st.columns([3, 1])
+    with pull_col1:
+        model_to_pull = st.text_input(
+            "Model name",
+            placeholder="e.g., llama3.2-vision",
+            help="Enter an Ollama model name from ollama.com/library",
+        )
+    with pull_col2:
+        st.markdown("")  # spacing
+        pull_clicked = st.button("⬇️ Pull Model", type="primary")
+
+    if pull_clicked and model_to_pull:
+        progress_bar = st.progress(0, text=f"Pulling {model_to_pull}...")
+        status_text = st.empty()
+        try:
+            for update in backend.pull_model(model_to_pull):
+                status = update.get("status", "")
+                completed = update.get("completed", 0)
+                total = update.get("total", 0)
+                if total > 0:
+                    pct = min(completed / total, 1.0)
+                    progress_bar.progress(
+                        pct,
+                        text=f"{status} — {_format_size(completed)} / {_format_size(total)}",
+                    )
+                else:
+                    status_text.caption(status)
+            progress_bar.progress(1.0, text="Download complete!")
+            st.success(f"Successfully pulled {model_to_pull}")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Failed to pull model: {e}")
+
+    # --- Recommended Models ---
+    with st.expander("Recommended Vision Models"):
+        st.markdown(
+            "These models support image analysis on Ollama:\n\n"
+            + "\n".join(f"- `{m}`" for m in RECOMMENDED_VISION_MODELS)
+            + "\n\nCopy a name above and click **Pull Model** to download."
+        )
+
+
 def render_upload_section():
     """Render the file upload area and return processed image data."""
     st.subheader("Upload Medical Image")
@@ -109,14 +233,18 @@ def render_upload_section():
     file_name = uploaded_file.name.lower()
     is_dicom = file_name.endswith((".dcm", ".dicom"))
 
-    if is_dicom:
-        ds = load_dicom(uploaded_file)
-        image_8bit, metadata = preprocess_dicom(ds)
-        pil_image = dicom_to_pil(image_8bit)
-    else:
-        image_array, metadata = preprocess_standard_image(uploaded_file)
-        image_8bit = image_array
-        pil_image = Image.fromarray(image_array)
+    try:
+        if is_dicom:
+            ds = load_dicom(uploaded_file)
+            image_8bit, metadata = preprocess_dicom(ds)
+            pil_image = dicom_to_pil(image_8bit)
+        else:
+            image_array, metadata = preprocess_standard_image(uploaded_file)
+            image_8bit = image_array
+            pil_image = Image.fromarray(image_array)
+    except Exception as e:
+        st.error(f"Failed to load image: {e}")
+        return None, None, None
 
     col1, col2 = st.columns(2)
     with col1:
@@ -125,7 +253,6 @@ def render_upload_section():
         if metadata:
             st.markdown("**DICOM Metadata**")
             for k, v in metadata.items():
-                # Omit patient-identifying info from default display
                 if k not in ("PatientID", "PatientName"):
                     st.text(f"{k}: {v}")
             if st.checkbox("Show patient identifiers"):
@@ -173,7 +300,6 @@ def render_analysis_section(backend, image_8bit, metadata):
     if st.session_state["analysis_result"]:
         st.markdown("---")
 
-        # Disclaimer gate
         if not st.session_state["acknowledged"]:
             st.warning(DISCLAIMER)
             if st.button("I understand — show provisional findings"):
@@ -187,11 +313,9 @@ def render_analysis_section(backend, image_8bit, metadata):
             st.markdown(DISCLAIMER)
             st.markdown("---")
 
-            # Technical findings
             with st.expander("Technical Findings", expanded=True):
                 st.markdown(st.session_state["analysis_result"])
 
-            # Patient-friendly summary
             with st.expander("Patient-Friendly Summary"):
                 st.markdown(
                     _generate_patient_summary(st.session_state["analysis_result"])
@@ -226,28 +350,34 @@ def main():
 
     init_session_state()
     backend = render_sidebar()
-    image_8bit, pil_image, metadata = render_upload_section()
 
-    if image_8bit is not None:
-        render_analysis_section(backend, image_8bit, metadata)
-    else:
-        st.info("Upload a medical image to get started.")
+    tab_analyze, tab_models = st.tabs(["📋 Analysis", "⚙️ Model Management"])
 
-        # Show supported formats
-        with st.expander("Supported Formats & Features"):
-            st.markdown(
-                "**Supported file types:** DICOM (.dcm), PNG, JPEG\n\n"
-                "**Preprocessing pipeline (DICOM):**\n"
-                "- HU Calibration for CT scans\n"
-                "- Windowing (Window Center / Window Width)\n"
-                "- Photometric inversion (MONOCHROME1 → MONOCHROME2)\n\n"
-                "**AI Analysis Framework:**\n"
-                "1. Modality Identification\n"
-                "2. Structured Observations\n"
-                "3. Diagnostic Synthesis with confidence scoring\n"
-                "4. Specialist Referral Recommendations\n\n"
-                "**Backends:** Ollama (cross-platform) or mlx-lm (Apple Silicon)"
-            )
+    with tab_analyze:
+        image_8bit, pil_image, metadata = render_upload_section()
+
+        if image_8bit is not None:
+            render_analysis_section(backend, image_8bit, metadata)
+        else:
+            st.info("Upload a medical image to get started.")
+
+            with st.expander("Supported Formats & Features"):
+                st.markdown(
+                    "**Supported file types:** DICOM (.dcm), PNG, JPEG\n\n"
+                    "**Preprocessing pipeline (DICOM):**\n"
+                    "- HU Calibration for CT scans\n"
+                    "- Windowing (Window Center / Window Width)\n"
+                    "- Photometric inversion (MONOCHROME1 → MONOCHROME2)\n\n"
+                    "**AI Analysis Framework:**\n"
+                    "1. Modality Identification\n"
+                    "2. Structured Observations\n"
+                    "3. Diagnostic Synthesis with confidence scoring\n"
+                    "4. Specialist Referral Recommendations\n\n"
+                    "**Backends:** Ollama (cross-platform) or mlx-lm (Apple Silicon)"
+                )
+
+    with tab_models:
+        render_model_management(backend)
 
 
 if __name__ == "__main__":

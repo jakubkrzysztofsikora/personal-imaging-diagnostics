@@ -1,8 +1,5 @@
 """Tests for the Streamlit app using AppTest framework."""
 
-import pytest
-
-from inference import SYSTEM_PROMPT
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +52,17 @@ class TestSessionState:
     def test_init_defaults(self):
         """SS-01: Verify default session state values."""
         from app import init_session_state
-        # We can't fully test Streamlit session state outside of AppTest,
-        # but we can verify the function doesn't crash when imported
         assert callable(init_session_state)
+
+
+class TestRecommendedModels:
+    def test_recommended_models_list_exists(self):
+        """Model management: recommended vision models list is populated."""
+        from app import RECOMMENDED_VISION_MODELS
+        assert len(RECOMMENDED_VISION_MODELS) > 0
+        assert "llama3.2-vision" in RECOMMENDED_VISION_MODELS
+
+    def test_model_management_function_exists(self):
+        """Model management: render_model_management is callable."""
+        from app import render_model_management
+        assert callable(render_model_management)

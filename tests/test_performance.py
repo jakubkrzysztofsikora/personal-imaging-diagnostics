@@ -1,17 +1,15 @@
 """Performance benchmarks using pytest-benchmark."""
 
 import numpy as np
-import pytest
 from pydicom.dataset import Dataset
 
+from inference import _image_to_base64
 from preprocessing import (
     apply_hu_calibration,
     apply_windowing,
-    preprocess_dicom,
-    dicom_to_pil,
     extract_metadata,
+    preprocess_dicom,
 )
-from inference import _image_to_base64
 
 
 def _make_ct_dataset(rows, cols):
@@ -31,8 +29,8 @@ def _make_ct_dataset(rows, cols):
     ds.PhotometricInterpretation = "MONOCHROME2"
     ds.PixelData = np.random.randint(-1024, 3000, (rows, cols), dtype=np.int16).tobytes()
     ds.file_meta = Dataset()
-    from pydicom.uid import ExplicitVRLittleEndian
     import pydicom
+    from pydicom.uid import ExplicitVRLittleEndian
     ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
     ds.file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.2"
     ds.file_meta.MediaStorageSOPInstanceUID = pydicom.uid.generate_uid()

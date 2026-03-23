@@ -1,9 +1,10 @@
 """Property-based tests using Hypothesis for fuzz testing."""
 
 import numpy as np
-from hypothesis import given, settings, assume
+from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
+from pydicom.dataset import Dataset
 
 from preprocessing import (
     apply_hu_calibration,
@@ -11,8 +12,6 @@ from preprocessing import (
     apply_windowing,
     dicom_to_pil,
 )
-from pydicom.dataset import Dataset
-
 
 # ---------------------------------------------------------------------------
 # PB-01: Windowing always returns uint8 in [0, 255]

@@ -7,7 +7,6 @@ via either Ollama's HTTP API or mlx-lm's Python API.
 
 import base64
 import io
-import json
 
 import numpy as np
 import requests
@@ -77,11 +76,76 @@ class OllamaBackend:
         return False
 
     def list_models(self):
-        """List available Ollama models."""
+        """List available Ollama models with details."""
         try:
             resp = requests.get(f"{self.base_url}/api/tags", timeout=5)
             if resp.status_code == 200:
-                return [m["name"] for m in resp.json().get("models", [])]
+                return resp.json().get("models", [])
+        except requests.ConnectionError:
+            pass
+        return []
+
+    def list_model_names(self):
+        """List available Ollama model names (strings only)."""
+        return [m["name"] for m in self.list_models()]
+
+    def pull_model(self, model_name, stream=True):
+        """Pull/download a model from the Ollama registry.
+
+        Yields progress dicts when stream=True: {"status", "completed", "total"}.
+        Returns final status dict when stream=False.
+        """
+        payload = {"model": model_name, "stream": stream}
+        if stream:
+            resp = requests.post(
+                f"{self.base_url}/api/pull",
+                json=payload,
+                stream=True,
+                timeout=10,
+            )
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if line:
+                    import json
+                    yield json.loads(line)
+        else:
+            resp = requests.post(
+                f"{self.base_url}/api/pull",
+                json=payload,
+                timeout=3600,
+            )
+            resp.raise_for_status()
+            yield resp.json()
+
+    def delete_model(self, model_name):
+        """Delete a model from Ollama. Returns True on success."""
+        resp = requests.delete(
+            f"{self.base_url}/api/delete",
+            json={"model": model_name},
+            timeout=30,
+        )
+        return resp.status_code == 200
+
+    def show_model(self, model_name):
+        """Get detailed info about a model."""
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/show",
+                json={"model": model_name},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+        except requests.ConnectionError:
+            pass
+        return None
+
+    def list_running(self):
+        """List currently running/loaded models."""
+        try:
+            resp = requests.get(f"{self.base_url}/api/ps", timeout=5)
+            if resp.status_code == 200:
+                return resp.json().get("models", [])
         except requests.ConnectionError:
             pass
         return []
@@ -160,7 +224,11 @@ class MlxLmBackend:
         return response
 
 
-def get_available_backend(ollama_model="llama3.2-vision", mlx_model="mlx-community/GLM-4.5V-9B-4bit", ollama_url="http://localhost:11434"):
+def get_available_backend(
+    ollama_model="llama3.2-vision",
+    mlx_model="mlx-community/GLM-4.5V-9B-4bit",
+    ollama_url="http://localhost:11434",
+):
     """Return the first available backend, preferring Ollama."""
     ollama = OllamaBackend(model_name=ollama_model, base_url=ollama_url)
     if ollama.is_available():

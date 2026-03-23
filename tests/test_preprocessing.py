@@ -8,6 +8,7 @@ import pytest
 from pydicom.dataset import Dataset
 
 from preprocessing import (
+    _parse_window_value,
     apply_hu_calibration,
     apply_photometric_inversion,
     apply_windowing,
@@ -16,9 +17,7 @@ from preprocessing import (
     load_dicom,
     preprocess_dicom,
     preprocess_standard_image,
-    _parse_window_value,
 )
-
 
 # ---------------------------------------------------------------------------
 # DICOM Loading (P-*)
@@ -159,7 +158,7 @@ class TestWindowing:
         arr = np.array([[0.0, 100.0, 200.0]])
         # This is an edge case; we just verify no exception
         try:
-            result = apply_windowing(arr, 100, 0)
+            apply_windowing(arr, 100, 0)
             # With ww=0: lower=upper=100, clip makes all=100, then 0/0
             # numpy handles 0/0 as nan, cast to uint8 = 0
         except ZeroDivisionError:

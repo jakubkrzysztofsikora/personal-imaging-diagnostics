@@ -4,10 +4,10 @@ import io
 
 import numpy as np
 import pydicom
-from pydicom.dataset import Dataset
-from pydicom.uid import ExplicitVRLittleEndian
 import pytest
 from PIL import Image
+from pydicom.dataset import Dataset
+from pydicom.uid import ExplicitVRLittleEndian
 
 
 @pytest.fixture
