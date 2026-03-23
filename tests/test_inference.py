@@ -245,7 +245,10 @@ class TestOllamaBackend:
     @responses.activate
     def test_analyze_empty_response(self):
         """OB-10: Empty stream → fallback message."""
-        body = json.dumps({"done": True, "eval_count": 0, "eval_duration": 0, "prompt_eval_count": 0})
+        body = json.dumps({
+            "done": True, "eval_count": 0,
+            "eval_duration": 0, "prompt_eval_count": 0,
+        })
         responses.add(
             responses.POST,
             "http://localhost:11434/api/generate",
@@ -331,8 +334,8 @@ class TestOllamaBackend:
         arr = np.zeros((64, 64, 3), dtype=np.uint8)
         logs = []
         backend.analyze(arr, on_log=logs.append)
-        assert any("[backend]" in l for l in logs)
-        assert any("[ollama]" in l for l in logs)
+        assert any("[backend]" in msg for msg in logs)
+        assert any("[ollama]" in msg for msg in logs)
 
 
 # ---------------------------------------------------------------------------
