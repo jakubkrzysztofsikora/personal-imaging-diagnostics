@@ -154,15 +154,14 @@ class TestWindowing:
         np.testing.assert_array_equal(result, [[255, 255, 255]])
 
     def test_zero_window_width(self):
-        """W-06: Zero window width should not crash."""
+        """W-06: Zero window width produces binary image based on center."""
         arr = np.array([[0.0, 100.0, 200.0]])
-        # This is an edge case; we just verify no exception
-        try:
-            apply_windowing(arr, 100, 0)
-            # With ww=0: lower=upper=100, clip makes all=100, then 0/0
-            # numpy handles 0/0 as nan, cast to uint8 = 0
-        except ZeroDivisionError:
-            pytest.fail("apply_windowing should not raise ZeroDivisionError")
+        result = apply_windowing(arr, 100, 0)
+        assert result.dtype == np.uint8
+        # Values <= center → 0, values > center → 255
+        assert result[0, 0] == 0
+        assert result[0, 1] == 0
+        assert result[0, 2] == 255
 
     def test_output_always_uint8(self):
         """W-09: Output is always uint8."""

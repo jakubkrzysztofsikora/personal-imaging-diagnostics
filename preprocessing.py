@@ -46,10 +46,13 @@ def apply_hu_calibration(pixel_array, ds):
     """Apply Hounsfield Unit calibration for CT images.
 
     HU = pixel_value * RescaleSlope + RescaleIntercept
+
+    Expects pixel_array to already be a float array (the caller is responsible
+    for the conversion to avoid redundant work).
     """
     slope = getattr(ds, "RescaleSlope", 1.0)
     intercept = getattr(ds, "RescaleIntercept", 0.0)
-    hu_image = pixel_array.astype(np.float64) * float(slope) + float(intercept)
+    hu_image = pixel_array * float(slope) + float(intercept)
     return hu_image
 
 
@@ -60,10 +63,13 @@ def apply_windowing(image_array, window_center, window_width):
     """
     wc = float(window_center)
     ww = float(window_width)
+    if np.isclose(ww, 0.0):
+        # For a zero-width window, create a binary image based on the center.
+        return np.where(image_array > wc, 255, 0).astype(np.uint8)
     lower = wc - ww / 2.0
     upper = wc + ww / 2.0
     windowed = np.clip(image_array, lower, upper)
-    windowed = ((windowed - lower) / (upper - lower) * 255.0).astype(np.uint8)
+    windowed = ((windowed - lower) / ww * 255.0).astype(np.uint8)
     return windowed
 
 
@@ -97,7 +103,7 @@ def preprocess_dicom(ds):
 
     # Step 1: HU Calibration (primarily for CT)
     if modality == "CT" or hasattr(ds, "RescaleSlope"):
-        pixel_array = apply_hu_calibration(ds.pixel_array, ds)
+        pixel_array = apply_hu_calibration(pixel_array, ds)
 
     # Step 2: Windowing
     wc = _parse_window_value(getattr(ds, "WindowCenter", None))

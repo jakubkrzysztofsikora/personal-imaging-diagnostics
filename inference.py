@@ -7,6 +7,7 @@ via either Ollama's HTTP API or mlx-lm's Python API.
 
 import base64
 import io
+import json
 
 import numpy as np
 import requests
@@ -76,18 +77,29 @@ class OllamaBackend:
         return False
 
     def list_models(self):
-        """List available Ollama models with details."""
+        """List available Ollama models with details.
+
+        Returns a list of model dicts on success (may be empty if no models
+        are installed), or None if the server cannot be reached.
+        """
         try:
             resp = requests.get(f"{self.base_url}/api/tags", timeout=5)
             if resp.status_code == 200:
                 return resp.json().get("models", [])
         except requests.ConnectionError:
             pass
-        return []
+        return None
 
     def list_model_names(self):
-        """List available Ollama model names (strings only)."""
-        return [m["name"] for m in self.list_models()]
+        """List available Ollama model names (strings only).
+
+        Returns a list of name strings on success, or None if the server
+        cannot be reached.
+        """
+        models = self.list_models()
+        if models is None:
+            return None
+        return [m["name"] for m in models]
 
     def pull_model(self, model_name, stream=True):
         """Pull/download a model from the Ollama registry.
@@ -106,7 +118,6 @@ class OllamaBackend:
             resp.raise_for_status()
             for line in resp.iter_lines():
                 if line:
-                    import json
                     yield json.loads(line)
         else:
             resp = requests.post(

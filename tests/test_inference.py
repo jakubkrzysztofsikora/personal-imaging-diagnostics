@@ -119,14 +119,37 @@ class TestOllamaBackend:
 
     @responses.activate
     def test_list_models_server_down(self):
-        """OB-05: Server down → empty list."""
+        """OB-05: Server down → None (not empty list)."""
         responses.add(
             responses.GET,
             "http://localhost:11434/api/tags",
             body=requests.exceptions.ConnectionError("refused"),
         )
         backend = OllamaBackend()
+        assert backend.list_models() is None
+
+    @responses.activate
+    def test_list_models_empty(self):
+        """OB-05b: Server up but no models → empty list (not None)."""
+        responses.add(
+            responses.GET,
+            "http://localhost:11434/api/tags",
+            json={"models": []},
+            status=200,
+        )
+        backend = OllamaBackend()
         assert backend.list_models() == []
+
+    @responses.activate
+    def test_list_model_names_server_down(self):
+        """OB-05c: list_model_names returns None when server is down."""
+        responses.add(
+            responses.GET,
+            "http://localhost:11434/api/tags",
+            body=requests.exceptions.ConnectionError("refused"),
+        )
+        backend = OllamaBackend()
+        assert backend.list_model_names() is None
 
     @responses.activate
     def test_analyze_success(self, mock_ollama_generate_response):

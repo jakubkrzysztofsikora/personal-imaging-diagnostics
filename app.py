@@ -119,9 +119,10 @@ def render_model_management(backend):
 
     st.subheader("Ollama Model Management")
 
-    # Connection check
+    # Connection check — list_models() returns None on connection failure,
+    # or an empty list when connected but no models are installed.
     models = backend.list_models()
-    if not models and not backend.list_model_names():
+    if models is None:
         st.error(
             "Cannot connect to Ollama. Make sure Ollama is running "
             "(`ollama serve` or the desktop app)."

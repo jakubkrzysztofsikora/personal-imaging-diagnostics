@@ -44,14 +44,14 @@ class TestListModels:
 
     @responses.activate
     def test_list_models_server_down(self):
-        """list_models returns [] when server is down."""
+        """list_models returns None when server is down."""
         responses.add(
             responses.GET,
             "http://localhost:11434/api/tags",
             body=requests.exceptions.ConnectionError("refused"),
         )
         backend = OllamaBackend()
-        assert backend.list_models() == []
+        assert backend.list_models() is None
 
 
 # ---------------------------------------------------------------------------
