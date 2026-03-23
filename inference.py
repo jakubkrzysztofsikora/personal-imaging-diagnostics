@@ -310,10 +310,17 @@ class MlxLmBackend:
         on_token=None,
         on_log=None,
     ):
-        """Run inference using mlx-lm."""
+        """Run inference using mlx-lm.
+
+        Attempts streaming via ``mlx_lm.stream_generate`` so that
+        *on_token* is called per-chunk, matching OllamaBackend's
+        behaviour.  Falls back to ``mlx_lm.generate`` (single-shot)
+        when ``stream_generate`` is unavailable or does not support
+        the ``image`` kwarg, in which case *on_token* is called once
+        with the complete response.
+        """
         t0 = time.monotonic()
         self._load_model()
-        from mlx_lm import generate
 
         if isinstance(image, np.ndarray):
             image = Image.fromarray(image)
@@ -329,10 +336,20 @@ class MlxLmBackend:
 
         full_prompt = SYSTEM_PROMPT + "\n\n" + "\n".join(context_parts)
 
+        # --- Try streaming first -------------------------------------------
+        response = self._try_stream(
+            full_prompt, image, on_token, on_log, t0,
+        )
+        if response is not None:
+            return response
+
+        # --- Fallback: single-shot generate --------------------------------
+        from mlx_lm import generate
+
         if on_log:
             on_log(f"[mlx-lm] Running inference ({self.model_name})…")
 
-        response = generate(
+        result = generate(
             self._model,
             self._processor,
             prompt=full_prompt,
@@ -341,11 +358,67 @@ class MlxLmBackend:
             verbose=False,
         )
 
+        if on_token:
+            on_token(result)
+
         if on_log:
             elapsed = time.monotonic() - t0
             on_log(f"[mlx-lm] Done in {elapsed:.1f}s")
 
-        return response
+        return result
+
+    # ------------------------------------------------------------------
+    def _try_stream(self, prompt, image, on_token, on_log, t0):
+        """Attempt streaming generation; return None if unsupported."""
+        try:
+            from mlx_lm import stream_generate
+        except ImportError:
+            return None
+
+        if on_log:
+            on_log(
+                f"[mlx-lm] Streaming inference ({self.model_name})…"
+            )
+
+        try:
+            tokens = []
+            first_token_time = None
+            for chunk in stream_generate(
+                self._model,
+                self._processor,
+                prompt=prompt,
+                image=image,
+                max_tokens=2048,
+            ):
+                text = chunk.text if hasattr(chunk, "text") else str(chunk)
+                if not text:
+                    continue
+                if first_token_time is None:
+                    first_token_time = time.monotonic()
+                    if on_log:
+                        on_log(
+                            f"[mlx-lm] First token after "
+                            f"{first_token_time - t0:.1f}s"
+                        )
+                tokens.append(text)
+                if on_token:
+                    on_token(text)
+
+            if on_log:
+                elapsed = time.monotonic() - t0
+                on_log(
+                    f"[mlx-lm] Done — {len(tokens)} tokens "
+                    f"in {elapsed:.1f}s"
+                )
+            return "".join(tokens)
+        except TypeError:
+            # stream_generate doesn't accept `image` — fall back
+            if on_log:
+                on_log(
+                    "[mlx-lm] stream_generate does not support "
+                    "images, falling back to generate"
+                )
+            return None
 
 
 def get_available_backend(
