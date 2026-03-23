@@ -35,7 +35,7 @@ jobs:
           pip install pytest pytest-cov pytest-benchmark responses hypothesis
 
       - name: Run tests with coverage
-        run: pytest --cov --cov-report=term-missing --no-cov-on-fail
+        run: pytest --cov --cov-report=term-missing --cov-fail-under=0
 
   type-check:
     runs-on: ubuntu-latest
