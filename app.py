@@ -40,7 +40,7 @@ RECOMMENDED_VISION_MODELS = [
 
 def init_session_state():
     defaults = {
-        "analysis_results": {},
+        "analysis_results": [],
         "acknowledged": False,
         "pull_status": None,
     }
@@ -246,7 +246,7 @@ def _process_uploaded_file(uploaded_file):
 def render_upload_section():
     """Render the file upload area and return processed image data.
 
-    Returns a list of (image_8bit, pil_image, metadata) tuples, one per
+    Returns a list of (image_8bit, pil_image, metadata, file_name) tuples, one per
     successfully loaded file.  Returns an empty list when nothing is uploaded.
     """
     st.subheader("Upload Medical Images")
@@ -324,7 +324,7 @@ def render_analysis_section(backend, images):
             )
             return
 
-        results = {}
+        results = []
         for image_8bit, _pil, metadata, file_name in images:
             with st.spinner(f"Analyzing {file_name}..."):
                 try:
@@ -333,7 +333,7 @@ def render_analysis_section(backend, images):
                         user_prompt=user_prompt,
                         metadata=metadata,
                     )
-                    results[file_name] = result
+                    results.append((file_name, result))
                 except Exception as e:
                     st.error(f"Analysis failed for {file_name}: {e}")
 
@@ -358,7 +358,7 @@ def render_analysis_section(backend, images):
             st.markdown(DISCLAIMER)
             st.markdown("---")
 
-            for file_name, result in st.session_state["analysis_results"].items():
+            for file_name, result in st.session_state["analysis_results"]:
                 with st.expander(f"Technical Findings — {file_name}", expanded=True):
                     st.markdown(result)
 
