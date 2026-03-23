@@ -5,10 +5,12 @@ A local, privacy-preserving Streamlit app for analyzing X-rays, CTs, and MRIs
 using a local Vision-Language Model via Ollama or mlx-lm.
 """
 
+import time
+
 import streamlit as st
 from PIL import Image
 
-from inference import MlxLmBackend, OllamaBackend
+from inference import DEFAULT_MAX_IMAGE_DIM, MlxLmBackend, OllamaBackend
 from preprocessing import (
     dicom_to_pil,
     load_dicom,
@@ -103,12 +105,27 @@ def render_sidebar():
                 st.sidebar.error("mlx-lm is not installed. Run: pip install mlx-lm")
 
     st.sidebar.markdown("---")
+    st.sidebar.header("Performance")
+    max_image_dim = st.sidebar.slider(
+        "Max image dimension (px)",
+        min_value=256,
+        max_value=2048,
+        value=DEFAULT_MAX_IMAGE_DIM,
+        step=128,
+        help=(
+            "Images are down-scaled so the longest side does not exceed this "
+            "value before being sent to the model. Lower values reduce memory "
+            "usage and speed up inference, but may lose fine detail."
+        ),
+    )
+
+    st.sidebar.markdown("---")
     st.sidebar.markdown(
         "🔒 **Privacy**: All processing runs locally.\n\n"
         "No data is sent to external servers."
     )
 
-    return backend
+    return backend, max_image_dim
 
 
 def render_model_management(backend):
@@ -299,7 +316,7 @@ def render_upload_section():
     return results
 
 
-def render_analysis_section(backend, images):
+def render_analysis_section(backend, images, max_image_dim=DEFAULT_MAX_IMAGE_DIM):
     """Render the analysis controls and results.
 
     Parameters
@@ -307,6 +324,8 @@ def render_analysis_section(backend, images):
     backend : OllamaBackend | MlxLmBackend
     images : list[tuple]
         Each element is (image_8bit, pil_image, metadata, file_name).
+    max_image_dim : int
+        Maximum image dimension sent to the model.
     """
     st.subheader("AI Analysis")
 
@@ -324,18 +343,59 @@ def render_analysis_section(backend, images):
             )
             return
 
+        total_images = len(images)
         results = []
-        for image_8bit, _pil, metadata, file_name in images:
-            with st.spinner(f"Analyzing {file_name}..."):
-                try:
-                    result = backend.analyze(
-                        image_8bit,
-                        user_prompt=user_prompt,
-                        metadata=metadata,
+        for img_idx, (image_8bit, _pil, metadata, file_name) in enumerate(images):
+            st.markdown(f"**Analyzing image {img_idx + 1}/{total_images}: {file_name}**")
+
+            # Placeholders for live output
+            progress_placeholder = st.empty()
+            response_placeholder = st.empty()
+            log_placeholder = st.empty()
+
+            log_lines = []
+            token_fragments = []
+            start_time = time.monotonic()
+
+            def _on_token(fragment, _frags=token_fragments, _ph=response_placeholder,
+                          _start=start_time, _pph=progress_placeholder):
+                _frags.append(fragment)
+                _ph.markdown("".join(_frags) + "▌")
+                elapsed = time.monotonic() - _start
+                tok_count = len(_frags)
+                # Rough ETA: assume ~500 tokens total for a full analysis
+                if tok_count > 5:
+                    est_total = 500
+                    tps = tok_count / elapsed
+                    remaining = max(0, (est_total - tok_count) / tps)
+                    _pph.caption(
+                        f"⏱ {elapsed:.0f}s elapsed · ~{remaining:.0f}s remaining "
+                        f"· {tps:.1f} tok/s · {tok_count} tokens"
                     )
-                    results.append((file_name, result))
-                except Exception as e:
-                    st.error(f"Analysis failed for {file_name}: {e}")
+                else:
+                    _pph.caption(f"⏱ {elapsed:.0f}s elapsed · generating…")
+
+            def _on_log(msg, _logs=log_lines, _ph=log_placeholder):
+                _logs.append(msg)
+                _ph.code("\n".join(_logs), language="text")
+
+            try:
+                result = backend.analyze(
+                    image_8bit,
+                    user_prompt=user_prompt,
+                    metadata=metadata,
+                    max_image_dim=max_image_dim,
+                    on_token=_on_token,
+                    on_log=_on_log,
+                )
+                elapsed = time.monotonic() - start_time
+                progress_placeholder.caption(
+                    f"Done in {elapsed:.1f}s · {len(token_fragments)} tokens"
+                )
+                response_placeholder.empty()
+                results.append((file_name, result))
+            except Exception as e:
+                st.error(f"Analysis failed for {file_name}: {e}")
 
         if results:
             st.session_state["analysis_results"] = results
@@ -393,7 +453,7 @@ def main():
     st.caption("Local, privacy-preserving AI analysis of X-rays, CTs, and MRIs")
 
     init_session_state()
-    backend = render_sidebar()
+    backend, max_image_dim = render_sidebar()
 
     tab_analyze, tab_models = st.tabs(["📋 Analysis", "⚙️ Model Management"])
 
@@ -401,7 +461,7 @@ def main():
         images = render_upload_section()
 
         if images:
-            render_analysis_section(backend, images)
+            render_analysis_section(backend, images, max_image_dim)
         else:
             st.info("Upload a medical image to get started.")
 
