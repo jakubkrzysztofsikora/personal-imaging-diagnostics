@@ -40,7 +40,7 @@ RECOMMENDED_VISION_MODELS = [
 
 def init_session_state():
     defaults = {
-        "analysis_result": None,
+        "analysis_results": {},
         "acknowledged": False,
         "pull_status": None,
     }
@@ -220,54 +220,94 @@ def render_model_management(backend):
         )
 
 
-def render_upload_section():
-    """Render the file upload area and return processed image data."""
-    st.subheader("Upload Medical Image")
-    uploaded_file = st.file_uploader(
-        "Upload a DICOM (.dcm), PNG, or JPEG file",
-        type=["dcm", "dicom", "png", "jpg", "jpeg"],
-    )
+MAX_UPLOADS = 3
 
-    if uploaded_file is None:
-        return None, None, None
 
+def _process_uploaded_file(uploaded_file):
+    """Process a single uploaded file into (image_8bit, pil_image, metadata).
+
+    Raises on failure so the caller can report per-file errors.
+    """
     file_name = uploaded_file.name.lower()
     is_dicom = file_name.endswith((".dcm", ".dicom"))
 
-    try:
-        if is_dicom:
-            ds = load_dicom(uploaded_file)
-            image_8bit, metadata = preprocess_dicom(ds)
-            pil_image = dicom_to_pil(image_8bit)
-        else:
-            image_array, metadata = preprocess_standard_image(uploaded_file)
-            image_8bit = image_array
-            pil_image = Image.fromarray(image_array)
-    except Exception as e:
-        st.error(f"Failed to load image: {e}")
-        return None, None, None
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.image(pil_image, caption="Uploaded Image", use_container_width=True)
-    with col2:
-        if metadata:
-            st.markdown("**DICOM Metadata**")
-            for k, v in metadata.items():
-                if k not in ("PatientID", "PatientName"):
-                    st.text(f"{k}: {v}")
-            if st.checkbox("Show patient identifiers"):
-                for k in ("PatientID", "PatientName"):
-                    if k in metadata:
-                        st.text(f"{k}: {metadata[k]}")
-        else:
-            st.info("No DICOM metadata (standard image file).")
+    if is_dicom:
+        ds = load_dicom(uploaded_file)
+        image_8bit, metadata = preprocess_dicom(ds)
+        pil_image = dicom_to_pil(image_8bit)
+    else:
+        image_array, metadata = preprocess_standard_image(uploaded_file)
+        image_8bit = image_array
+        pil_image = Image.fromarray(image_array)
 
     return image_8bit, pil_image, metadata
 
 
-def render_analysis_section(backend, image_8bit, metadata):
-    """Render the analysis controls and results."""
+def render_upload_section():
+    """Render the file upload area and return processed image data.
+
+    Returns a list of (image_8bit, pil_image, metadata) tuples, one per
+    successfully loaded file.  Returns an empty list when nothing is uploaded.
+    """
+    st.subheader("Upload Medical Images")
+    uploaded_files = st.file_uploader(
+        f"Upload up to {MAX_UPLOADS} DICOM (.dcm / .DCM), PNG, or JPEG files",
+        type=["dcm", "DCM", "dicom", "DICOM", "png", "jpg", "jpeg"],
+        accept_multiple_files=True,
+    )
+
+    if not uploaded_files:
+        return []
+
+    if len(uploaded_files) > MAX_UPLOADS:
+        st.warning(
+            f"Only the first {MAX_UPLOADS} files will be processed. "
+            f"You uploaded {len(uploaded_files)}."
+        )
+        uploaded_files = uploaded_files[:MAX_UPLOADS]
+
+    results = []
+    for idx, uploaded_file in enumerate(uploaded_files):
+        try:
+            image_8bit, pil_image, metadata = _process_uploaded_file(uploaded_file)
+        except Exception as e:
+            st.error(f"Failed to load {uploaded_file.name}: {e}")
+            continue
+
+        st.markdown(f"---\n#### Image {idx + 1}: {uploaded_file.name}")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.image(pil_image, caption=uploaded_file.name, use_container_width=True)
+        with col2:
+            if metadata:
+                st.markdown("**DICOM Metadata**")
+                for k, v in metadata.items():
+                    if k not in ("PatientID", "PatientName"):
+                        st.text(f"{k}: {v}")
+                if st.checkbox(
+                    "Show patient identifiers",
+                    key=f"show_ids_{idx}",
+                ):
+                    for k in ("PatientID", "PatientName"):
+                        if k in metadata:
+                            st.text(f"{k}: {metadata[k]}")
+            else:
+                st.info("No DICOM metadata (standard image file).")
+
+        results.append((image_8bit, pil_image, metadata, uploaded_file.name))
+
+    return results
+
+
+def render_analysis_section(backend, images):
+    """Render the analysis controls and results.
+
+    Parameters
+    ----------
+    backend : OllamaBackend | MlxLmBackend
+    images : list[tuple]
+        Each element is (image_8bit, pil_image, metadata, file_name).
+    """
     st.subheader("AI Analysis")
 
     user_prompt = st.text_area(
@@ -284,21 +324,25 @@ def render_analysis_section(backend, image_8bit, metadata):
             )
             return
 
-        with st.spinner("Analyzing image — this may take a minute..."):
-            try:
-                result = backend.analyze(
-                    image_8bit,
-                    user_prompt=user_prompt,
-                    metadata=metadata,
-                )
-                st.session_state["analysis_result"] = result
-                st.session_state["acknowledged"] = False
-            except Exception as e:
-                st.error(f"Analysis failed: {e}")
-                return
+        results = {}
+        for image_8bit, _pil, metadata, file_name in images:
+            with st.spinner(f"Analyzing {file_name}..."):
+                try:
+                    result = backend.analyze(
+                        image_8bit,
+                        user_prompt=user_prompt,
+                        metadata=metadata,
+                    )
+                    results[file_name] = result
+                except Exception as e:
+                    st.error(f"Analysis failed for {file_name}: {e}")
+
+        if results:
+            st.session_state["analysis_results"] = results
+            st.session_state["acknowledged"] = False
 
     # Display results with governor pattern
-    if st.session_state["analysis_result"]:
+    if st.session_state["analysis_results"]:
         st.markdown("---")
 
         if not st.session_state["acknowledged"]:
@@ -314,13 +358,12 @@ def render_analysis_section(backend, image_8bit, metadata):
             st.markdown(DISCLAIMER)
             st.markdown("---")
 
-            with st.expander("Technical Findings", expanded=True):
-                st.markdown(st.session_state["analysis_result"])
+            for file_name, result in st.session_state["analysis_results"].items():
+                with st.expander(f"Technical Findings — {file_name}", expanded=True):
+                    st.markdown(result)
 
-            with st.expander("Patient-Friendly Summary"):
-                st.markdown(
-                    _generate_patient_summary(st.session_state["analysis_result"])
-                )
+                with st.expander(f"Patient-Friendly Summary — {file_name}"):
+                    st.markdown(_generate_patient_summary(result))
 
 
 def _generate_patient_summary(technical_result):
@@ -355,10 +398,10 @@ def main():
     tab_analyze, tab_models = st.tabs(["📋 Analysis", "⚙️ Model Management"])
 
     with tab_analyze:
-        image_8bit, pil_image, metadata = render_upload_section()
+        images = render_upload_section()
 
-        if image_8bit is not None:
-            render_analysis_section(backend, image_8bit, metadata)
+        if images:
+            render_analysis_section(backend, images)
         else:
             st.info("Upload a medical image to get started.")
 
