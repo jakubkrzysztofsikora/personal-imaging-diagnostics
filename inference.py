@@ -92,7 +92,20 @@ class OllamaBackend:
 
     def __init__(self, model_name="llama3.2-vision", base_url="http://localhost:11434"):
         self.model_name = model_name
-        self.base_url = base_url.rstrip("/")
+        self.base_url = self._validate_url(base_url)
+
+    @staticmethod
+    def _validate_url(url):
+        """Validate that the Ollama URL points to localhost only (SSRF prevention)."""
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url.rstrip("/"))
+        if parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+            raise ValueError(
+                f"Ollama URL must point to localhost (got '{parsed.hostname}'). "
+                "Remote Ollama servers are blocked to prevent SSRF."
+            )
+        return url.rstrip("/")
 
     def is_available(self):
         """Check if Ollama is running and the model is accessible."""
